@@ -5,7 +5,7 @@
 % clear; clc;
 % FD parameters
 % test
-N  = 4;       % total FD grid points including boundaries
+N  = 18;       % total FD grid points including boundaries
 L  = 2;        % domain length [-1,1]
 Re = 500;
 
@@ -124,13 +124,12 @@ for j3 = 1:length(t0)
         Los=oo*(o-kx*U_yi_value*c+kx*m2_yi_value);%!
         Lsq=kx*U_yi_value-ooo;
         Lc=kz*m_yi_value;%diag
-        L_value=[Los,zeros(N-2,N-2);Lc,Lsq];
-        L=V*(-1i*L_value)/V;%new added
-
+        L_value{i}=[Los,zeros(N-2,N-2);Lc,Lsq];
+        L=V*(-1i*L_value{i})/V;%new added
 
 
         A(:, :, i) = L;
-        AA = expm(-1i*L_value*dt)*AA;
+        AA = expm(-1i*L_value{i}*dt)*AA;
         gh1=double(V*AA/V);
         G(i)=norm(gh1)^2;
     end
@@ -162,15 +161,16 @@ for j3 = 1:length(t0)
     operator.C_grad_v = C_grad(3*Ny+1:6*Ny, 1:n);
     operator.C_grad_w = C_grad(6*Ny+1:9*Ny, 1:n);
 %     Ny = size(operator.B,2)/3;
-    operator.E=LHS;
+%     operator.E=  LHS;
 
     %% LMI computation
     yalmip('clear');
 
-    type = "time_varying";
+    type = "time_varying_3";
     switch type
         %% with Gradient C and sx,sy,sz = sdpvar(1,1)
         case "time_varying"
+            yalmip('clear');
             F = [];
             % time-varying
             for j1=1:t_steps
@@ -202,20 +202,38 @@ for j3 = 1:length(t0)
                 if j1 < t_steps
                     M = blkdiag(sx{j1}*eye(Ny), sy{j1}*eye(Ny), sz{j1}*eye(Ny));
                     dP_dt = (P{j1 + 1} - P{j1}) / dt;
+%                     dV_ineq = [ ...
+%                         dP_dt + A(:,:,j1)' * P{j1} * operator.E + operator.E' * P{j1} * A(:,:,j1) ...
+%                         + sx{j1} * operator.C_grad_u' * operator.C_grad_u ...
+%                         + sy{j1} * operator.C_grad_v' * operator.C_grad_v ...
+%                         + sz{j1} * operator.C_grad_w' * operator.C_grad_w, ...
+%                         operator.E' * P{j1} * operator.B;
+%                         operator.B' * P{j1}* operator.E, -Gamma * M ...
+%                         ];
                     dV_ineq = [ ...
-                        dP_dt + A(:,:,j1)' * P{j1} * operator.E + operator.E' * P{j1} * A(:,:,j1) ...
+                        E'*dP_dt*E + (E * A(:,:,j1))' * P{j1} * E + E' * P{j1} * E* A(:,:,j1) ...
                         + sx{j1} * operator.C_grad_u' * operator.C_grad_u ...
                         + sy{j1} * operator.C_grad_v' * operator.C_grad_v ...
                         + sz{j1} * operator.C_grad_w' * operator.C_grad_w, ...
-                        operator.E' * P{j1} * operator.B;
-                        operator.B' * P{j1}* operator.E, -Gamma * M ...
+                        E' * P{j1} * E * operator.B;
+                        (E * operator.B)' * P{j1}* E, -Gamma * M ...
                         ];
+
 
                     % Add inequality constraint
                     F = [F,dV_ineq <= 0];
                 end
             end
             F=[F];
+%             dV_ineq_f = [ A(:,:,end)' * P{end} * operator.E + operator.E' * P{end} * A(:,:,end) ...
+%                         + sx{end} * operator.C_grad_u' * operator.C_grad_u ...
+%                         + sy{end} * operator.C_grad_v' * operator.C_grad_v ...
+%                         + sz{end} * operator.C_grad_w' * operator.C_grad_w, ...
+%                         operator.E' * P{end} * operator.B;
+%                         operator.B' * P{end}* operator.E, -Gamma * M ...
+%                         ];
+%             F=[F, dV_ineq_f <=0];
+
             sdp_options = sdpsettings('solver','mosek','verbose',1);
             %     sdp_options = sdpsettings('solver','mosek','cachesolvers',1);
             diagnostics = bisection(F,Gamma,sdp_options);
@@ -235,7 +253,7 @@ for j3 = 1:length(t0)
             %    tt = sdpvar(1);
             tt = 0.01;
             I = eye(n);
-            scaling = 1;
+            scaling = Re;
             E=I*scaling;
             Gamma = sdpvar(1,1);
 
@@ -267,23 +285,31 @@ for j3 = 1:length(t0)
 
             %% Without Gradient C(H_infty norm)
         case "time_varying_3"
+            yalmip('clear');
             F = [];
+           
             for j1=1:t_steps
                 %                 [P{j1}, F_local] = sparse_method(P_option, n, bandwidth);
                 P{j1}=sdpvar(n,n,'hermitian','complex');
                 F = [F, P{j1} >= 0.1*eye(n)];
             end
             Gamma = sdpvar(1,1);
-            
+            I = eye(n);
+            scaling = 1;
+            E=I*scaling;
             for j1 = 1:t_steps
                 if j1 < t_steps
                     M = blkdiag(eye(Ny), eye(Ny), eye(Ny));
                     dP_dt = (P{j1 + 1} - P{j1}) / dt;
 
-                    dV_ineq = [ dP_dt + A(:,:,j1)' * P{j1} +  P{j1} * A(:,:,j1) ...
+%                     dV_ineq = [ dP_dt + A(:,:,j1)' * P{j1} * operator.E + operator.E' * P{j1} * A(:,:,j1) ...
+%                         + operator.C' * operator.C, ...
+%                        operator.E' * P{j1} * operator.B;
+%                         operator.B' * P{j1} * operator.E, -Gamma * M ];
+                dV_ineq = [ E'*dP_dt*E + (E * A(:,:,j1))' * P{j1}*E + E'*P{j1} * E* A(:,:,j1) ...
                         + operator.C' * operator.C, ...
-                         P{j1} * operator.B;
-                        operator.B' * P{j1}, -Gamma * M ];
+                        E'*P{j1} * E* operator.B;
+                        (E * operator.B)' * P{j1} * E, -Gamma * M ];
                     % Add inequality constraint
                     F = [F, dV_ineq <= 0];
                 end
@@ -291,22 +317,76 @@ for j3 = 1:length(t0)
             F=[F];
             sdp_options = sdpsettings('solver','mosek','verbose',1);
             %     sdp_options = sdpsettings('solver','mosek','cachesolvers',1);
-            diagnostics = bisection(F,Gamma,sdp_options);
+            diagnostics = optimize(F,Gamma,sdp_options);
+
+
+            %% Time-independent: Without Gradient C (H_infty norm)
+            case "time_varying_4"   
+
+            folder_name = 'Hinf_Results';
+            if ~exist(folder_name, 'dir')
+                mkdir(folder_name);
+            end
+            
+            % Initialize storage for H-inf norms
+            hinf_norm = zeros(1, t_steps);
+            
+            figure('Visible', 'off'); % Create a hidden figure for saving plots
+%             ttt = (0:t_steps-1) * dt;
+            w_range = {1e-4, 10^(-0.3)};
+            for j1 = 1:t_steps    
+%                 A0 = -1i * L_value{1};
+%                 sys = ss(A0, operator.B, operator.C, zeros(size(operator.C,1)));
+                A = -1i * L_value{j1};
+                sys = ss(A, operator.B, operator.C, zeros(size(operator.C,1)));
+                hinf_norm(j1) = norm(sys, inf);
+                [sv, w] = sigma(sys, w_range); 
+    
+%                 gain_dB = 20*log10(sv(1,:));
+%                 gain_dB = 20*log10( max(sv,[],1) );
+                gain_dB = max(sv,[],1);
+
+                
+                hFig = figure('Visible', 'off'); 
+                semilogx(w, gain_dB, 'b-', 'LineWidth', 1.5);
+                
+                grid on;
+                xlabel('Frequency (rad/s)');
+                ylabel('Gain (dB)');
+                title(['Resolvent Spectrum at Step ', num2str(j1)]);
+                
+                drawnow; 
+                
+                file_path = fullfile(folder_name, sprintf('Sigma_step_%03d.png', j1));
+                saveas(hFig, file_path);
+                close(hFig);
+                
+                if mod(j1, 10) == 0, fprintf('Saved step %d\n', j1); end
+            end
+            ts = linspace(0, (t_steps-1)*dt, t_steps);
+            figure('Name', 'Final H-infinity Trend');
+            plot(ts, hinf_norm, '-b', 'LineWidth', 2);
+            xlabel('t');
+            ylabel('gain');
+            title('Temporal Evolution of H_\{infty} norm');
+            grid on;
+            
+            saveas(gcf, fullfile(folder_name, 'Hinf_Final_Plot.png'));
    end
 
     diagnostics.info
 
-    if diagnostics.problem == 0
+%     if diagnostics.problem == 0
         operator.mu_LMI = value(Gamma);
         operator.P_optimal = value(P);
-        operator.t_optimal = value(tt);
+%         operator.t_optimal = value(tt);
         operator.P = P;
         %         operator.sx =sx;
         %         operator.sy = sy;
         %         operator.sz = sz;
-        sx_numeric = value(sx);
-        sy_numeric = value(sy);
-        sz_numeric = value(sz);
+%         sx_numeric = value(sx);
+%         sy_numeric = value(sy);
+%         sz_numeric = value(sz);
         eigvals = cell(t_steps, 1);
         eigvecs = cell(t_steps, 1);
         for j1 = 1:t_steps
@@ -322,15 +402,20 @@ for j3 = 1:length(t0)
         all_eigenvectors{j3} = eigvecs;
 
 
-    end
+%     end
+%     local_results{1, j3} = struct( ...
+%         'kx', kx, ...
+%         'kz', kz, ...
+%         'mu_LMI', operator.mu_LMI, ...
+%         'P', P_cell, ...
+%         'sx', sx_numeric, ...
+%         'sy', sy_numeric, ...
+%         'sz', sz_numeric);
     local_results{1, j3} = struct( ...
         'kx', kx, ...
         'kz', kz, ...
         'mu_LMI', operator.mu_LMI, ...
-        'P', P_cell, ...
-        'sx', sx_numeric, ...
-        'sy', sy_numeric, ...
-        'sz', sz_numeric);
+        'P', P_cell);
 
 end
 
