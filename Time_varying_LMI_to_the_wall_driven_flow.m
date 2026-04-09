@@ -1,13 +1,13 @@
 % addpath(genpath('/home/zhw22003/YALMIP-master'))
 % system('export PATH=$PATH:/home/zhw22003/mosek/11.0/tools/platform/linux64x86/bin')
 % addpath(genpath('/home/zhw22003/mosek'))
-
+% addpath()
 % clear; clc;
 % FD parameters
 % test
-N  = 18;       % total FD grid points including boundaries
+N  = 8;       % total FD grid points including boundaries
 L  = 2;        % domain length [-1,1]
-Re = 500;
+Re = 3000;
 
 % Spectral ranges (as in paper)
 kx_list = logspace(-4, 0.48, 3);
@@ -18,8 +18,8 @@ t0=[0, 20, 40, 60, 80, 100];
 t0=[0];
 
 P_option = 'full'; % P_option={'full','band','band_12','chord'};
-bandwidth = 1; %bandwidth=n-1 will be equivalent to full P matrix. bandwidth=1 will be tridiagonal matrix
-delete(gcp('nocreate'));
+bandwidth = 4; %bandwidth=n-1 will be equivalent to full P matrix. bandwidth=1 will be tridiagonal matrix
+% delete(gcp('nocreate'));
 % parpool(8);
 [operator,local_results] = build_operators_fd_and_LMI(N, L, Re, kx, kz, t0, P_option, bandwidth);
 
@@ -100,7 +100,7 @@ o=1/(1i*Re)*(D4-2*D2*k2+k2*k2);
 oo=-inv(c); % inverse laplace
 ooo=(1/(1i*Re))*c;
 
-%% Construct Nonlinear Time-varying System
+%% Construct linear Time-varying System
 for j3 = 1:length(t0)
     %A
 
@@ -216,7 +216,7 @@ for j3 = 1:length(t0)
                         + sy{j1} * operator.C_grad_v' * operator.C_grad_v ...
                         + sz{j1} * operator.C_grad_w' * operator.C_grad_w, ...
                         E' * P{j1} * E * operator.B;
-                        (E * operator.B)' * P{j1}* E, -Gamma * M ...
+                        (E * operator.B)' * P{j1}* E, -Gamma^2 * M ...
                         ];
 
 
@@ -253,26 +253,41 @@ for j3 = 1:length(t0)
             %    tt = sdpvar(1);
             tt = 0.01;
             I = eye(n);
-            scaling = Re;
+            scaling = 1;  
             E=I*scaling;
             Gamma = sdpvar(1,1);
+
+%             max_real_eig = -inf;
+%             for i = 1:t_steps
+%                 max_real_eig = max(max_real_eig, max(real(eig(A(:,:,i)))));
+%             end
+%             disp(['Max Real Eigenvalue: ', num2str(max_real_eig)]);
 
             for j1 = 1:t_steps
                 % Always include positivity constraints for every time step
                 F = [F];
+%                 F = [F, P{j1} <= 1e6 * eye(n)]; % Th
 
                 % Only form and include dV_ineq if j1 < t_steps
                 if j1 < t_steps
                     M = blkdiag(sx*eye(Ny), sy*eye(Ny), sz*eye(Ny));
                     dP_dt = (P{j1 + 1} - P{j1}) / dt;
                     dV_ineq = [ ...
-                        dP_dt + A(:,:,j1)' * P{j1} * operator.E + operator.E' * P{j1} * A(:,:,j1) ...
+                        E'*dP_dt*E + (E * A(:,:,j1))' * P{j1}*E + E'*P{j1} * E* A(:,:,j1) ...
                         + sx * operator.C_grad_u' * operator.C_grad_u ...
                         + sy * operator.C_grad_v' * operator.C_grad_v ...
                         + sz * operator.C_grad_w' * operator.C_grad_w, ...
-                        operator.E' * P{j1} * operator.B;
-                        operator.B' * P{j1}* operator.E, -Gamma * M ...
+                        E'*P{j1} * E* operator.B;
+                        (E * operator.B)' * P{j1} * E, -Gamma * M  ...
                         ];
+%                     dV_ineq = [ ...
+%                         dP_dt + A(:,:,j1)' * P{j1} * operator.E + operator.E' * P{j1} * A(:,:,j1) ...
+%                         + sx * operator.C_grad_u' * operator.C_grad_u ...
+%                         + sy * operator.C_grad_v' * operator.C_grad_v ...
+%                         + sz * operator.C_grad_w' * operator.C_grad_w, ...
+%                         operator.E' * P{j1} * operator.B;
+%                         operator.B' * P{j1}* operator.E, -Gamma^2 * M ...
+%                         ];
 
                     % Add inequality constraint
                     F = [F,dV_ineq <= 0];
@@ -281,17 +296,20 @@ for j3 = 1:length(t0)
 
             sdp_options = sdpsettings('solver','mosek','verbose',1);
             %     sdp_options = sdpsettings('solver','mosek','cachesolvers',1);
-            diagnostics = bisection(F,Gamma,sdp_options);
+            diagnostics = optimize(F,Gamma,sdp_options);
+
+           
 
             %% Without Gradient C(H_infty norm)
         case "time_varying_3"
             yalmip('clear');
             F = [];
-           
+
             for j1=1:t_steps
-                %                 [P{j1}, F_local] = sparse_method(P_option, n, bandwidth);
-                P{j1}=sdpvar(n,n,'hermitian','complex');
-                F = [F, P{j1} >= 0.1*eye(n)];
+                [P{j1}, F_local] = sparse_method(P_option, n, bandwidth);
+                F =[F,F_local];
+%                 P{j1}=sdpvar(n,n,'hermitian','complex');
+%                 F = [F, P{j1} >= 0.1*eye(n)];
             end
             Gamma = sdpvar(1,1);
             I = eye(n);
@@ -302,11 +320,11 @@ for j3 = 1:length(t0)
                     M = blkdiag(eye(Ny), eye(Ny), eye(Ny));
                     dP_dt = (P{j1 + 1} - P{j1}) / dt;
 
-%                     dV_ineq = [ dP_dt + A(:,:,j1)' * P{j1} * operator.E + operator.E' * P{j1} * A(:,:,j1) ...
-%                         + operator.C' * operator.C, ...
-%                        operator.E' * P{j1} * operator.B;
-%                         operator.B' * P{j1} * operator.E, -Gamma * M ];
-                dV_ineq = [ E'*dP_dt*E + (E * A(:,:,j1))' * P{j1}*E + E'*P{j1} * E* A(:,:,j1) ...
+                    %                     dV_ineq = [ dP_dt + A(:,:,j1)' * P{j1} * operator.E + operator.E' * P{j1} * A(:,:,j1) ...
+                    %                         + operator.C' * operator.C, ...
+                    %                        operator.E' * P{j1} * operator.B;
+                    %                         operator.B' * P{j1} * operator.E, -Gamma * M ];
+                    dV_ineq = [ E'*dP_dt*E + (E * A(:,:,j1))' * P{j1}*E + E'*P{j1} * E* A(:,:,j1) ...
                         + operator.C' * operator.C, ...
                         E'*P{j1} * E* operator.B;
                         (E * operator.B)' * P{j1} * E, -Gamma * M ];
@@ -315,108 +333,117 @@ for j3 = 1:length(t0)
                 end
             end
             F=[F];
-            sdp_options = sdpsettings('solver','mosek','verbose',1);
+            sdp_options = sdpsettings('solver','gurobi','verbose',1);
             %     sdp_options = sdpsettings('solver','mosek','cachesolvers',1);
             diagnostics = optimize(F,Gamma,sdp_options);
 
 
             %% Time-independent: Without Gradient C (H_infty norm)
-            case "time_varying_4"   
-
+        case "time_varying_4"
             folder_name = 'Hinf_Results';
             if ~exist(folder_name, 'dir')
                 mkdir(folder_name);
             end
-            
+
             % Initialize storage for H-inf norms
             hinf_norm = zeros(1, t_steps);
-            
-            figure('Visible', 'off'); % Create a hidden figure for saving plots
-%             ttt = (0:t_steps-1) * dt;
-            w_range = {1e-4, 10^(-0.3)};
-            for j1 = 1:t_steps    
-%                 A0 = -1i * L_value{1};
-%                 sys = ss(A0, operator.B, operator.C, zeros(size(operator.C,1)));
-                A = -1i * L_value{j1};
-                sys = ss(A, operator.B, operator.C, zeros(size(operator.C,1)));
-                hinf_norm(j1) = norm(sys, inf);
-                [sv, w] = sigma(sys, w_range); 
-    
-%                 gain_dB = 20*log10(sv(1,:));
-%                 gain_dB = 20*log10( max(sv,[],1) );
-                gain_dB = max(sv,[],1);
 
-                
-                hFig = figure('Visible', 'off'); 
-                semilogx(w, gain_dB, 'b-', 'LineWidth', 1.5);
-                
+            figure('Visible', 'off'); % Create a hidden figure for saving plots
+            w_range = logspace(-4, -0.3, 128);
+            for j1 = 1:t_steps
+                A_1(:,:,j1) = -1i * L_value{j1};
+                %                 A = A(:,:,j1);
+                sys = ss(A_1(:,:,j1), operator.B, operator.C, zeros(size(operator.C,1)));
+                hinf_norm(j1) = norm(sys, inf);
+                [sv, w] = sigma(sys, w_range);
+                gain = max(sv,[],1);
+
+
+                hFig = figure('Visible', 'off');
+                semilogx(w, gain, 'b-', 'LineWidth', 1.5);
+
                 grid on;
                 xlabel('Frequency (rad/s)');
-                ylabel('Gain (dB)');
+                ylabel('Gain');
                 title(['Resolvent Spectrum at Step ', num2str(j1)]);
-                
-                drawnow; 
-                
+
+                drawnow;
+
                 file_path = fullfile(folder_name, sprintf('Sigma_step_%03d.png', j1));
                 saveas(hFig, file_path);
                 close(hFig);
-                
+
                 if mod(j1, 10) == 0, fprintf('Saved step %d\n', j1); end
             end
+            [Hinf_max, peak_idx] = max(hinf_norm);  % find maximum H∞
             ts = linspace(0, (t_steps-1)*dt, t_steps);
+            t_peak = ts(peak_idx);
             figure('Name', 'Final H-infinity Trend');
             plot(ts, hinf_norm, '-b', 'LineWidth', 2);
             xlabel('t');
             ylabel('gain');
             title('Temporal Evolution of H_\{infty} norm');
             grid on;
-            
+
             saveas(gcf, fullfile(folder_name, 'Hinf_Final_Plot.png'));
-   end
+    end
 
-    diagnostics.info
+    type = "LMI";
+    switch type
+        case "LMI"
+            diagnostics.info
 
-%     if diagnostics.problem == 0
-        operator.mu_LMI = value(Gamma);
-        operator.P_optimal = value(P);
-%         operator.t_optimal = value(tt);
-        operator.P = P;
-        %         operator.sx =sx;
-        %         operator.sy = sy;
-        %         operator.sz = sz;
-%         sx_numeric = value(sx);
-%         sy_numeric = value(sy);
-%         sz_numeric = value(sz);
-        eigvals = cell(t_steps, 1);
-        eigvecs = cell(t_steps, 1);
-        for j1 = 1:t_steps
-            P_numeric = double(operator.P_optimal{j1});
-            P_cell{j1} = P_numeric;
-            [V_eig, D_eig] = eig(P_numeric);
-            eigvals{j1} = diag(D_eig);
-            eigvecs{j1} = V_eig;
+            %     if diagnostics.problem == 0
+            operator.mu_LMI = value(Gamma);
+            operator.P_optimal = value(P);
+            %         operator.t_optimal = value(tt);
+            operator.P = P;
+            %         operator.sx =sx;
+            %         operator.sy = sy;
+            %         operator.sz = sz;
+            %         sx_numeric = value(sx);
+            %         sy_numeric = value(sy);
+            %         sz_numeric = value(sz);
+            eigvals = cell(t_steps, 1);
+            eigvecs = cell(t_steps, 1);
+            for j1 = 1:t_steps
+                P_numeric = double(operator.P_optimal{j1});
+                P_cell{j1} = P_numeric;
+                [V_eig, D_eig] = eig(P_numeric);
+                eigvals{j1} = diag(D_eig);
+                eigvecs{j1} = V_eig;
 
-        end
+            end
 
-        all_eigenvalues{j3} = eigvals;
-        all_eigenvectors{j3} = eigvecs;
+            all_eigenvalues{j3} = eigvals;
+            all_eigenvectors{j3} = eigvecs;
 
 
-%     end
-%     local_results{1, j3} = struct( ...
-%         'kx', kx, ...
-%         'kz', kz, ...
-%         'mu_LMI', operator.mu_LMI, ...
-%         'P', P_cell, ...
-%         'sx', sx_numeric, ...
-%         'sy', sy_numeric, ...
-%         'sz', sz_numeric);
-    local_results{1, j3} = struct( ...
-        'kx', kx, ...
-        'kz', kz, ...
-        'mu_LMI', operator.mu_LMI, ...
-        'P', P_cell);
+            %     end
+            %     local_results{1, j3} = struct( ...
+            %         'kx', kx, ...
+            %         'kz', kz, ...
+            %         'mu_LMI', operator.mu_LMI, ...
+            %         'P', P_cell, ...
+            %         'sx', sx_numeric, ...
+            %         'sy', sy_numeric, ...
+            %         'sz', sz_numeric);
+            local_results{1, j3} = struct( ...
+                'kx', kx, ...
+                'kz', kz, ...
+                'mu_LMI', operator.mu_LMI, ...
+                'P', P_cell);
+            
+        case "H_inf"
+            local_results{1, j3} = struct( ...
+                'kx', kx, ...
+                'kz', kz, ...
+                'hinf_norm', hinf_norm, ...
+                'ts', ts, ...
+                ' t_peak',  t_peak, ...
+                'Hinf_max', Hinf_max);
 
+    end
 end
 
 operator.local_results = local_results;  % embed optional
@@ -559,7 +586,7 @@ if strcmp(P_option,'full')
     P = sdpvar(n,n,'hermitian','complex');
 
     %constraint that P is PSD.
-    F = P - 0.01*eye(n) >= 0;
+    F = P - 1*eye(n) >= 0;
 
 elseif strcmp(P_option,'band')
     %
